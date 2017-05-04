@@ -2,53 +2,347 @@
 #include <jni.h>
 #include "string"
 #include <android/log.h>
+#include <android/native_window.h>
+#include <android/native_window_jni.h>
 /* Header for class net_yxcoding_ffmpeg_FFmpegUtil */
 
-#define LOGE(...) __android_log_print( ANDROID_LOG_ERROR, "svr", __VA_ARGS__ )
+#define LOGE(...) __android_log_print( ANDROID_LOG_ERROR, "yxcoding", __VA_ARGS__ )
+#define LOGD(...) __android_log_print( ANDROID_LOG_DEBUG, "yxcoding", __VA_ARGS__ )
 
 #ifndef _Included_net_yxcoding_ffmpeg_FFmpegUtil
 #define _Included_net_yxcoding_ffmpeg_FFmpegUtil
 #ifdef __cplusplus
 extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/imgutils.h>
+#include <libswscale/swscale.h>
 #endif
-
-char *jstringToChar(JNIEnv *env, jstring jstr) {
-    char *rtn = NULL;
-    jclass clsstring = env->FindClass("java/lang/String");
-    jstring strencode = env->NewStringUTF("GB2312");
-    jmethodID mid = env->GetMethodID(clsstring, "getBytes", "(Ljava/lang/String;)[B");
-    jbyteArray barr = (jbyteArray) env->CallObjectMethod(jstr, mid, strencode);
-    jsize alen = env->GetArrayLength(barr);
-    jbyte *ba = env->GetByteArrayElements(barr, JNI_FALSE);
-    if (alen > 0) {
-        rtn = (char *) malloc(alen + 1);
-        memcpy(rtn, ba, alen);
-        rtn[alen] = 0;
-    }
-    env->ReleaseByteArrayElements(barr, ba, 0);
-    return rtn;
-}
-
-jstring charTojstring(JNIEnv *env, const char *pat) {
-    int strLen = strlen(pat);
-    jclass jstrObj = (env)->FindClass("java/lang/String");
-    jmethodID methodId = (env)->GetMethodID(jstrObj, "<init>", "([BLjava/lang/String;)V");
-    jbyteArray byteArray = (env)->NewByteArray(strLen);
-    jstring encode = (env)->NewStringUTF("utf-8");
-
-    (env)->SetByteArrayRegion(byteArray, 0, strLen, (jbyte *) pat);
-
-    return (jstring) (env)->NewObject(jstrObj, methodId, byteArray, encode);
-}
 
 JNIEXPORT jstring JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_ffmpegInfo
         (JNIEnv *, jclass) {
 
 }
 
-JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_setCurlDebug
-        (JNIEnv *, jclass, jboolean) {
+JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_videoInfo
+        (JNIEnv *env, jclass, jstring jfilePath, jstring joutFile) {
 
+    // ffmpeg 第一步初始化注册
+    av_register_all();
+
+    // 获取上下文路径
+    AVFormatContext *avFormatContext = avformat_alloc_context();
+    const char *filePath = env->GetStringUTFChars(jfilePath, JNI_FALSE);
+
+    LOGD("filePath = %s", filePath);
+
+    // 打开媒体文件
+    if (avformat_open_input(&avFormatContext, filePath, NULL, NULL) != 0) {
+        LOGE("%s", "无法打开视频文件");
+        return;
+    }
+
+    // 获取媒体流信息
+    if (avformat_find_stream_info(avFormatContext, NULL) < 0) {
+        LOGE("%s", "无法获取视频信息");
+        return;
+    }
+
+    int videoIndex = -1;
+
+    LOGD("nb_streams = %d", avFormatContext->nb_streams);
+
+    // 获取视频流index
+    for (int i = 0; i < avFormatContext->nb_streams; i++) {
+        if (avFormatContext->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            videoIndex = i;
+            break;
+        }
+    }
+
+    LOGD("videoIndex = %d", videoIndex);
+    int64_t duration = avFormatContext->streams[videoIndex]->duration;
+    LOGD("duration = %u", duration);
+
+    // 获取解码器参数
+    AVCodecParameters *codecpar = avFormatContext->streams[videoIndex]->codecpar;
+    LOGD("video width = %d, video height = %d", codecpar->width, codecpar->height);
+
+    // 获取解码器
+    AVCodec *avCodec = avcodec_find_decoder(codecpar->codec_id);
+    if (avCodec == NULL) {
+        LOGE("%s", "无法找到解码器");
+        return;
+    }
+
+    //AVCodecContext *avCodecContext = avcodec_alloc_context3(avCodec);
+    AVCodecContext *avCodecContext = avFormatContext->streams[videoIndex]->codec;
+    // 打开解码器
+    if (avcodec_open2(avCodecContext, avCodec, NULL) < 0) {
+        LOGE("%s", "无法打开解码器");
+        return;
+    }
+
+    // 为一帧图像分配内存
+    AVFrame *avFrame = av_frame_alloc();
+    AVFrame *avRGBFrame = av_frame_alloc();
+
+    if (avFrame == NULL || avRGBFrame == NULL) {
+        LOGE("%s", "frame alloc fail");
+        return;
+    }
+
+    // 获得帧图片大小
+    int acImageBufferSize = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, codecpar->width,
+                                                     codecpar->height, 1);
+    LOGD("acImageBufferSize = %d", acImageBufferSize);
+    uint8_t *buf;
+    buf = (uint8_t *) av_malloc(acImageBufferSize);
+
+    if (buf == NULL) {
+        LOGE("%s", "av malloc fail");
+        return;
+    }
+
+    av_image_fill_arrays(avRGBFrame->data, avRGBFrame->linesize, buf, AV_PIX_FMT_YUV420P,
+                         codecpar->width, codecpar->height, 1);
+
+    LOGE("%d", avCodecContext->pix_fmt);
+
+    struct SwsContext *swsContext;
+    swsContext = sws_getContext(codecpar->width, codecpar->height,
+                                AV_PIX_FMT_RGB24,
+                                codecpar->width, codecpar->height,
+                                AV_PIX_FMT_YUV420P,
+                                SWS_BICUBIC, NULL, NULL, NULL);
+
+    LOGE("%s", "swsContext end");
+
+    FILE *fpYuv = fopen(env->GetStringUTFChars(joutFile, JNI_FALSE), "wb+");
+
+    AVPacket *packet = (AVPacket *) av_malloc(sizeof(AVPacket));
+
+    while (av_read_frame(avFormatContext, packet) >= 0) {
+        if (packet->stream_index == videoIndex) {
+            int res = avcodec_send_packet(avCodecContext, packet);
+            if (res != 0) {
+                av_packet_unref(packet);
+                LOGE("decode error %d %d %d %d %d", res, AVERROR(EAGAIN), AVERROR_EOF,
+                     AVERROR(EINVAL),
+                     AVERROR(ENOMEM));
+                return;
+            }
+            if (avcodec_receive_frame(avCodecContext, avFrame) != 0) {
+                av_packet_unref(packet);
+                LOGE("%s", "decode error2.\n");
+                return;
+            }
+
+            sws_scale(swsContext, (const uint8_t *const *) avFrame->data, avFrame->linesize, 0,
+                      codecpar->height,
+                      avRGBFrame->data, avRGBFrame->linesize);
+
+            int y_size = codecpar->width * codecpar->height;
+            fwrite(avRGBFrame->data[0], 1, y_size, fpYuv);    //Y
+            fwrite(avRGBFrame->data[1], 1, y_size / 4, fpYuv);  //U
+            fwrite(avRGBFrame->data[2], 1, y_size / 4, fpYuv);  //V
+            LOGE("%s", "Succeed to decode 1 frame!\n");
+        }
+        av_packet_unref(packet);
+    }
+
+    sws_freeContext(swsContext);
+
+    // 释放资源
+    av_frame_free(&avFrame);
+    av_frame_free(&avRGBFrame);
+
+    avcodec_close(avCodecContext);
+
+    avformat_close_input(&avFormatContext);
+
+    avformat_free_context(avFormatContext);
+
+}
+
+void formatTime(int64_t time) {
+    int hours, mins, secs, us;
+    int64_t duration = time;
+    secs = duration / AV_TIME_BASE;
+    us = duration % AV_TIME_BASE;
+    mins = secs / 60;
+    secs %= 60;
+    hours = mins / 60;
+    mins %= 60;
+    //LOGD("%02d:%02d:%02d.%02d\n", hours, mins, secs, (100 * us) / AV_TIME_BASE);
+    LOGD("%02d:%02d:%02d\n", hours, mins, secs);
+}
+
+JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_playVideo
+        (JNIEnv *env, jclass, jstring jfilePath, jobject jsurface) {
+
+    // ffmpeg 第一步初始化注册
+    av_register_all();
+
+    // 获取上下文路径
+    AVFormatContext *avFormatContext = avformat_alloc_context();
+    const char *filePath = env->GetStringUTFChars(jfilePath, JNI_FALSE);
+
+    LOGD("filePath = %s", filePath);
+
+    // 打开媒体文件
+    if (avformat_open_input(&avFormatContext, filePath, NULL, NULL) != 0) {
+        LOGE("%s", "无法打开视频文件");
+        return;
+    }
+
+    // 获取媒体流信息
+    if (avformat_find_stream_info(avFormatContext, NULL) < 0) {
+        LOGE("%s", "无法获取视频信息");
+        return;
+    }
+
+    int videoIndex = -1;
+
+    LOGD("nb_streams = %d", avFormatContext->nb_streams);
+
+    // 获取视频流index
+    for (int i = 0; i < avFormatContext->nb_streams; i++) {
+        if (avFormatContext->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            videoIndex = i;
+            break;
+        }
+    }
+
+    LOGD("videoIndex = %d", videoIndex);
+    int64_t duration = avFormatContext->streams[videoIndex]->duration;
+    //LOGD("duration = %u", duration);
+    formatTime(avFormatContext->duration);
+
+    // 获取解码器参数
+    AVCodecParameters *codecpar = avFormatContext->streams[videoIndex]->codecpar;
+    LOGD("video width = %d, video height = %d", codecpar->width, codecpar->height);
+
+    // 获取解码器
+    AVCodec *avCodec = avcodec_find_decoder(codecpar->codec_id);
+    if (avCodec == NULL) {
+        LOGE("%s", "无法找到解码器");
+        return;
+    }
+
+    // 获取native window
+    ANativeWindow *nativeWindow = ANativeWindow_fromSurface(env, jsurface);
+    ANativeWindow_setBuffersGeometry(nativeWindow, codecpar->width, codecpar->height,
+                                     WINDOW_FORMAT_RGBA_8888);
+    ANativeWindow_Buffer windowBuffer;
+
+    //AVCodecContext *avCodecContext = avcodec_alloc_context3(avCodec);
+    AVCodecContext *avCodecContext = avFormatContext->streams[videoIndex]->codec;
+    // 打开解码器
+    if (avcodec_open2(avCodecContext, avCodec, NULL) < 0) {
+        LOGE("%s", "无法打开解码器");
+        return;
+    }
+
+    // 为一帧图像分配内存
+    AVFrame *avFrame = av_frame_alloc();
+    AVFrame *avRGBFrame = av_frame_alloc();
+
+    if (avFrame == NULL || avRGBFrame == NULL) {
+        LOGE("%s", "frame alloc fail");
+        return;
+    }
+
+    // 获得帧图片大小
+    int acImageBufferSize = av_image_get_buffer_size(AV_PIX_FMT_RGBA, codecpar->width,
+                                                     codecpar->height, 1);
+    LOGD("acImageBufferSize = %d", acImageBufferSize);
+    uint8_t *buf;
+    buf = (uint8_t *) av_malloc(acImageBufferSize);
+
+    if (buf == NULL) {
+        LOGE("%s", "av malloc fail");
+        return;
+    }
+
+    av_image_fill_arrays(avRGBFrame->data, avRGBFrame->linesize, buf, AV_PIX_FMT_RGBA,
+                         codecpar->width, codecpar->height, 1);
+
+    LOGE("%d", avCodecContext->pix_fmt);
+
+    struct SwsContext *swsContext;
+    swsContext = sws_getContext(codecpar->width, codecpar->height,
+                                avCodecContext->pix_fmt,
+                                codecpar->width, codecpar->height,
+                                AV_PIX_FMT_RGBA,
+                                SWS_BICUBIC, NULL, NULL, NULL);
+
+    LOGE("%s", "swsContext end");
+
+    AVPacket *packet = (AVPacket *) av_malloc(sizeof(AVPacket));
+
+    AVStream *videoStream = avFormatContext->streams[videoIndex];
+
+    int64_t time = 0;
+    while (av_read_frame(avFormatContext, packet) >= 0) {
+        if (packet->stream_index == videoIndex) {
+            int res = avcodec_send_packet(avCodecContext, packet);
+            if (res != 0) {
+                av_packet_unref(packet);
+                LOGE("decode error %d %d %d %d %d", res, AVERROR(EAGAIN), AVERROR_EOF,
+                     AVERROR(EINVAL),
+                     AVERROR(ENOMEM));
+                return;
+            }
+            if (avcodec_receive_frame(avCodecContext, avFrame) != 0) {
+                av_packet_unref(packet);
+                LOGE("%s", "decode error2.\n");
+                return;
+            }
+
+            double time = packet->pts * av_q2d(videoStream->time_base);
+
+            formatTime(time * AV_TIME_BASE);
+
+            //LOGE("%d - %d", packet->pts * av_q2d(avCodecContext->time_base));
+            //LOGE("%d - %d", (packet->pts * av_q2d(avCodecContext->time_base)), packet->dts);
+
+            // lock native window buffer
+            ANativeWindow_lock(nativeWindow, &windowBuffer, NULL);
+
+            sws_scale(swsContext, (const uint8_t *const *) avFrame->data, avFrame->linesize, 0,
+                      codecpar->height,
+                      avRGBFrame->data, avRGBFrame->linesize);
+
+            // 获取stride
+            uint8_t *dst = (uint8_t *) windowBuffer.bits;
+            int dstStride = windowBuffer.stride * 4;
+            uint8_t *src = avRGBFrame->data[0];
+            int srcStride = avRGBFrame->linesize[0];
+
+            // 由于window的stride和帧的stride不同,因此需要逐行复制
+            for (int h = 0; h < codecpar->height; h++) {
+                memcpy(dst + h * dstStride, src + h * srcStride, srcStride);
+            }
+
+            ANativeWindow_unlockAndPost(nativeWindow);
+
+            //LOGE("%s", "Succeed to decode 1 frame!\n");
+        }
+        av_packet_unref(packet);
+    }
+
+    sws_freeContext(swsContext);
+
+    // 释放资源
+    av_frame_free(&avFrame);
+    av_frame_free(&avRGBFrame);
+
+    avcodec_close(avCodecContext);
+
+    avformat_close_input(&avFormatContext);
+
+    avformat_free_context(avFormatContext);
 }
 
 #ifdef __cplusplus

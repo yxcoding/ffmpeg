@@ -17,11 +17,19 @@ JNIEXPORT jstring JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_ffmpegInfo
 
 /*
  * Class:     net_yxcoding_ffmpeg_FFmpegUtil
- * Method:    setCurlDebug
- * Signature: (Z)V
+ * Method:    videoInfo
+ * Signature: (Ljava/lang/String;Ljava/lang/String;)V
  */
-JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_setCurlDebug
-  (JNIEnv *, jclass, jboolean);
+JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_videoInfo
+  (JNIEnv *, jclass, jstring, jstring);
+
+/*
+ * Class:     net_yxcoding_ffmpeg_FFmpegUtil
+ * Method:    playVideo
+ * Signature: (Ljava/lang/String;Ljava/lang/Object;)V
+ */
+JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_playVideo
+  (JNIEnv *, jclass, jstring, jobject);
 
 #ifdef __cplusplus
 }

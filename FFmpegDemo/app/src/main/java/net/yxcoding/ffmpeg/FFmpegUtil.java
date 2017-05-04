@@ -18,5 +18,10 @@ public class FFmpegUtil {
         System.loadLibrary("swscale-4");*/
         System.loadLibrary("ffmpegtest");
     }
+
     public static native String ffmpegInfo();
+
+    public static native void videoInfo(String filePath, String outFile);
+
+    public static native void playVideo(String filePath, Object surface);
 }

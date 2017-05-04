@@ -66,4 +66,4 @@ add_library( ffmpegtest
              SHARED
              src/main/jni/FFmpegTest.cpp )
 
-target_link_libraries( ffmpegtest avcodec avdevice avfilter avformat avutil swresample swscale ${log-lib} )
+target_link_libraries( ffmpegtest avcodec avdevice avfilter avformat avutil swresample swscale android ${log-lib} )
