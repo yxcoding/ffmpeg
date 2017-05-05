@@ -4,6 +4,7 @@
 #include <android/log.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
+#include "unistd.h"
 /* Header for class net_yxcoding_ffmpeg_FFmpegUtil */
 
 #define LOGE(...) __android_log_print( ANDROID_LOG_ERROR, "yxcoding", __VA_ARGS__ )
@@ -17,6 +18,8 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
+#include <libyuv.h>
+#include <libavutil/time.h>
 #endif
 
 JNIEXPORT jstring JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_ffmpegInfo
@@ -26,142 +29,6 @@ JNIEXPORT jstring JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_ffmpegInfo
 
 JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_videoInfo
         (JNIEnv *env, jclass, jstring jfilePath, jstring joutFile) {
-
-    // ffmpeg 第一步初始化注册
-    av_register_all();
-
-    // 获取上下文路径
-    AVFormatContext *avFormatContext = avformat_alloc_context();
-    const char *filePath = env->GetStringUTFChars(jfilePath, JNI_FALSE);
-
-    LOGD("filePath = %s", filePath);
-
-    // 打开媒体文件
-    if (avformat_open_input(&avFormatContext, filePath, NULL, NULL) != 0) {
-        LOGE("%s", "无法打开视频文件");
-        return;
-    }
-
-    // 获取媒体流信息
-    if (avformat_find_stream_info(avFormatContext, NULL) < 0) {
-        LOGE("%s", "无法获取视频信息");
-        return;
-    }
-
-    int videoIndex = -1;
-
-    LOGD("nb_streams = %d", avFormatContext->nb_streams);
-
-    // 获取视频流index
-    for (int i = 0; i < avFormatContext->nb_streams; i++) {
-        if (avFormatContext->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            videoIndex = i;
-            break;
-        }
-    }
-
-    LOGD("videoIndex = %d", videoIndex);
-    int64_t duration = avFormatContext->streams[videoIndex]->duration;
-    LOGD("duration = %u", duration);
-
-    // 获取解码器参数
-    AVCodecParameters *codecpar = avFormatContext->streams[videoIndex]->codecpar;
-    LOGD("video width = %d, video height = %d", codecpar->width, codecpar->height);
-
-    // 获取解码器
-    AVCodec *avCodec = avcodec_find_decoder(codecpar->codec_id);
-    if (avCodec == NULL) {
-        LOGE("%s", "无法找到解码器");
-        return;
-    }
-
-    //AVCodecContext *avCodecContext = avcodec_alloc_context3(avCodec);
-    AVCodecContext *avCodecContext = avFormatContext->streams[videoIndex]->codec;
-    // 打开解码器
-    if (avcodec_open2(avCodecContext, avCodec, NULL) < 0) {
-        LOGE("%s", "无法打开解码器");
-        return;
-    }
-
-    // 为一帧图像分配内存
-    AVFrame *avFrame = av_frame_alloc();
-    AVFrame *avRGBFrame = av_frame_alloc();
-
-    if (avFrame == NULL || avRGBFrame == NULL) {
-        LOGE("%s", "frame alloc fail");
-        return;
-    }
-
-    // 获得帧图片大小
-    int acImageBufferSize = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, codecpar->width,
-                                                     codecpar->height, 1);
-    LOGD("acImageBufferSize = %d", acImageBufferSize);
-    uint8_t *buf;
-    buf = (uint8_t *) av_malloc(acImageBufferSize);
-
-    if (buf == NULL) {
-        LOGE("%s", "av malloc fail");
-        return;
-    }
-
-    av_image_fill_arrays(avRGBFrame->data, avRGBFrame->linesize, buf, AV_PIX_FMT_YUV420P,
-                         codecpar->width, codecpar->height, 1);
-
-    LOGE("%d", avCodecContext->pix_fmt);
-
-    struct SwsContext *swsContext;
-    swsContext = sws_getContext(codecpar->width, codecpar->height,
-                                AV_PIX_FMT_RGB24,
-                                codecpar->width, codecpar->height,
-                                AV_PIX_FMT_YUV420P,
-                                SWS_BICUBIC, NULL, NULL, NULL);
-
-    LOGE("%s", "swsContext end");
-
-    FILE *fpYuv = fopen(env->GetStringUTFChars(joutFile, JNI_FALSE), "wb+");
-
-    AVPacket *packet = (AVPacket *) av_malloc(sizeof(AVPacket));
-
-    while (av_read_frame(avFormatContext, packet) >= 0) {
-        if (packet->stream_index == videoIndex) {
-            int res = avcodec_send_packet(avCodecContext, packet);
-            if (res != 0) {
-                av_packet_unref(packet);
-                LOGE("decode error %d %d %d %d %d", res, AVERROR(EAGAIN), AVERROR_EOF,
-                     AVERROR(EINVAL),
-                     AVERROR(ENOMEM));
-                return;
-            }
-            if (avcodec_receive_frame(avCodecContext, avFrame) != 0) {
-                av_packet_unref(packet);
-                LOGE("%s", "decode error2.\n");
-                return;
-            }
-
-            sws_scale(swsContext, (const uint8_t *const *) avFrame->data, avFrame->linesize, 0,
-                      codecpar->height,
-                      avRGBFrame->data, avRGBFrame->linesize);
-
-            int y_size = codecpar->width * codecpar->height;
-            fwrite(avRGBFrame->data[0], 1, y_size, fpYuv);    //Y
-            fwrite(avRGBFrame->data[1], 1, y_size / 4, fpYuv);  //U
-            fwrite(avRGBFrame->data[2], 1, y_size / 4, fpYuv);  //V
-            LOGE("%s", "Succeed to decode 1 frame!\n");
-        }
-        av_packet_unref(packet);
-    }
-
-    sws_freeContext(swsContext);
-
-    // 释放资源
-    av_frame_free(&avFrame);
-    av_frame_free(&avRGBFrame);
-
-    avcodec_close(avCodecContext);
-
-    avformat_close_input(&avFormatContext);
-
-    avformat_free_context(avFormatContext);
 
 }
 
@@ -178,17 +45,58 @@ void formatTime(int64_t time) {
     LOGD("%02d:%02d:%02d\n", hours, mins, secs);
 }
 
+int ScaleYUVImgToRGB(int nSrcW, int nSrcH, uint8_t *src_data, int *linesize, int nDstW, int nDstH) {
+    int i;
+    int ret;
+    FILE *nRGB_file;
+
+    AVFrame *nDst_picture;
+    struct SwsContext *m_pSwsContext;
+
+    nDst_picture = av_frame_alloc();
+    if (!nDst_picture) {
+        printf("nDst_picture avcodec_alloc_frame failed\n");
+        exit(1);
+    }
+    if (avpicture_alloc((AVPicture *) nDst_picture, AV_PIX_FMT_RGBA, nDstW, nDstH) < 0) {
+        printf("dst_picture avpicture_alloc failed\n");
+        return -1;
+    }
+    m_pSwsContext = sws_getContext(nSrcW, nSrcH, AV_PIX_FMT_YUV420P,
+                                   nDstW, nDstH, AV_PIX_FMT_RGBA,
+                                   SWS_BICUBIC,
+                                   NULL, NULL, NULL);
+
+    if (NULL == m_pSwsContext) {
+        printf("ffmpeg get context error!\n");
+        exit(-1);
+    }
+
+    ret = sws_scale(m_pSwsContext, (const uint8_t *const *) src_data, linesize, 0, nSrcH,
+                    nDst_picture->data,
+                    nDst_picture->linesize);
+
+    nRGB_file = fopen("..\\YUV_STREAM\\RGBFile.rgb", "ab+");
+    fwrite(nDst_picture->data[0], nDstW * nDstH * 3, 1, nRGB_file);
+    fclose(nRGB_file);
+
+    sws_freeContext(m_pSwsContext);
+    avpicture_free((AVPicture *) nDst_picture);
+
+    return 0;
+}
+
 JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_playVideo
         (JNIEnv *env, jclass, jstring jfilePath, jobject jsurface) {
+
+    const char *filePath = env->GetStringUTFChars(jfilePath, JNI_FALSE);
+    LOGD("filePath = %s", filePath);
 
     // ffmpeg 第一步初始化注册
     av_register_all();
 
     // 获取上下文路径
     AVFormatContext *avFormatContext = avformat_alloc_context();
-    const char *filePath = env->GetStringUTFChars(jfilePath, JNI_FALSE);
-
-    LOGD("filePath = %s", filePath);
 
     // 打开媒体文件
     if (avformat_open_input(&avFormatContext, filePath, NULL, NULL) != 0) {
@@ -202,10 +110,9 @@ JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_playVideo
         return;
     }
 
-    int videoIndex = -1;
-
     LOGD("nb_streams = %d", avFormatContext->nb_streams);
 
+    int videoIndex = -1;
     // 获取视频流index
     for (int i = 0; i < avFormatContext->nb_streams; i++) {
         if (avFormatContext->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
@@ -213,10 +120,8 @@ JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_playVideo
             break;
         }
     }
-
     LOGD("videoIndex = %d", videoIndex);
-    int64_t duration = avFormatContext->streams[videoIndex]->duration;
-    //LOGD("duration = %u", duration);
+
     formatTime(avFormatContext->duration);
 
     // 获取解码器参数
@@ -229,13 +134,6 @@ JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_playVideo
         LOGE("%s", "无法找到解码器");
         return;
     }
-
-    // 获取native window
-    ANativeWindow *nativeWindow = ANativeWindow_fromSurface(env, jsurface);
-    ANativeWindow_setBuffersGeometry(nativeWindow, codecpar->width, codecpar->height,
-                                     WINDOW_FORMAT_RGBA_8888);
-    ANativeWindow_Buffer windowBuffer;
-
     //AVCodecContext *avCodecContext = avcodec_alloc_context3(avCodec);
     AVCodecContext *avCodecContext = avFormatContext->streams[videoIndex]->codec;
     // 打开解码器
@@ -244,48 +142,76 @@ JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_playVideo
         return;
     }
 
-    // 为一帧图像分配内存
-    AVFrame *avFrame = av_frame_alloc();
-    AVFrame *avRGBFrame = av_frame_alloc();
+    double w_h = codecpar->width * 1.0f / codecpar->height * 1.0f;
 
-    if (avFrame == NULL || avRGBFrame == NULL) {
+    LOGD("w_h = %f", w_h);
+
+    //int outWidth = codecpar->width / 2;
+    //int outHeight = outWidth / w_h;
+    int outWidth = codecpar->width;
+    int outHeight = codecpar->height;
+
+
+    LOGD("outHeight = %d", outHeight);
+
+    // 获取native window
+    ANativeWindow *nativeWindow = ANativeWindow_fromSurface(env, jsurface);
+    ANativeWindow_Buffer windowBuffer;
+
+    // 获得帧图片大小
+    //int acImageBufferSize = av_image_get_buffer_size(AV_PIX_FMT_RGBA, outWidth, outHeight, 1);
+
+    //LOGD("acImageBufferSize = %d", acImageBufferSize);
+
+    // uint8_t *buf;
+    //buf = (uint8_t *) av_malloc(acImageBufferSize);
+
+//    if (buf == NULL) {
+//        LOGE("%s", "av malloc fail");
+//        return;
+//    }
+
+
+    // 编码数据（压缩数据）
+    AVPacket *packet = (AVPacket *) av_malloc(sizeof(AVPacket));    // 为一帧图像分配内存
+    // 解码数据
+    // Y    U V  4:1:1
+    // 亮度  色度
+    AVFrame *avYUVFrame = av_frame_alloc();
+    AVFrame *avRGBFrame = av_frame_alloc();
+    AVFrame *avRGBScaleFrame = av_frame_alloc();
+
+    if (avYUVFrame == NULL || avRGBFrame == NULL) {
         LOGE("%s", "frame alloc fail");
         return;
     }
+    /*av_image_fill_arrays(avRGBFrame->data, avRGBFrame->linesize, buf, AV_PIX_FMT_RGBA,
+                         outWidth, outHeight, 1);*/
 
-    // 获得帧图片大小
-    int acImageBufferSize = av_image_get_buffer_size(AV_PIX_FMT_RGBA, codecpar->width,
-                                                     codecpar->height, 1);
-    LOGD("acImageBufferSize = %d", acImageBufferSize);
-    uint8_t *buf;
-    buf = (uint8_t *) av_malloc(acImageBufferSize);
-
-    if (buf == NULL) {
-        LOGE("%s", "av malloc fail");
-        return;
-    }
-
-    av_image_fill_arrays(avRGBFrame->data, avRGBFrame->linesize, buf, AV_PIX_FMT_RGBA,
-                         codecpar->width, codecpar->height, 1);
+    //avpicture_fill()
 
     LOGE("%d", avCodecContext->pix_fmt);
 
-    struct SwsContext *swsContext;
-    swsContext = sws_getContext(codecpar->width, codecpar->height,
-                                avCodecContext->pix_fmt,
-                                codecpar->width, codecpar->height,
-                                AV_PIX_FMT_RGBA,
-                                SWS_BICUBIC, NULL, NULL, NULL);
+    int winWidth = ANativeWindow_getWidth(nativeWindow);
+    int winHeight = ANativeWindow_getHeight(nativeWindow);
 
-    LOGE("%s", "swsContext end");
+    struct SwsContext *swsContext = sws_getContext(codecpar->width, codecpar->height,
+                                                   AV_PIX_FMT_YUV420P,
+                                                   outWidth, outHeight,
+                                                   AV_PIX_FMT_RGBA,
+                                                   SWS_BICUBIC, NULL, NULL, NULL);
 
-    AVPacket *packet = (AVPacket *) av_malloc(sizeof(AVPacket));
+    LOGE("%d", avCodecContext->pix_fmt);
 
     AVStream *videoStream = avFormatContext->streams[videoIndex];
 
-    int64_t time = 0;
+    LOGD("winwidth = %d, winHeight = %d", ANativeWindow_getHeight(nativeWindow),
+         ANativeWindow_getWidth(nativeWindow));
+
     while (av_read_frame(avFormatContext, packet) >= 0) {
+        // 对视频进行解码
         if (packet->stream_index == videoIndex) {
+            //avcodec_decode_video2();
             int res = avcodec_send_packet(avCodecContext, packet);
             if (res != 0) {
                 av_packet_unref(packet);
@@ -294,39 +220,61 @@ JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_playVideo
                      AVERROR(ENOMEM));
                 return;
             }
-            if (avcodec_receive_frame(avCodecContext, avFrame) != 0) {
+            if (avcodec_receive_frame(avCodecContext, avYUVFrame) != 0) {
                 av_packet_unref(packet);
                 LOGE("%s", "decode error2.\n");
                 return;
             }
 
             double time = packet->pts * av_q2d(videoStream->time_base);
-
             formatTime(time * AV_TIME_BASE);
 
-            //LOGE("%d - %d", packet->pts * av_q2d(avCodecContext->time_base));
-            //LOGE("%d - %d", (packet->pts * av_q2d(avCodecContext->time_base)), packet->dts);
 
+            ANativeWindow_setBuffersGeometry(nativeWindow, outWidth, outHeight,
+                                             WINDOW_FORMAT_RGBA_8888);
             // lock native window buffer
             ANativeWindow_lock(nativeWindow, &windowBuffer, NULL);
 
-            sws_scale(swsContext, (const uint8_t *const *) avFrame->data, avFrame->linesize, 0,
+            // 设置rgb_frame 的属性（像素格式，宽高）和缓冲区
+            // rgb_frame 缓冲区与windowBuffer.bits 是同一块内存，指向surface
+            avpicture_fill((AVPicture *) avRGBFrame, (const uint8_t *) windowBuffer.bits,
+                           AV_PIX_FMT_RGBA, outWidth, outHeight);
+
+            // YUV420 > RGB
+            /*libyuv::I420ToARGB(avYUVFrame->data[0], avYUVFrame->linesize[0],
+                               avYUVFrame->data[2], avYUVFrame->linesize[2],
+                               avYUVFrame->data[1], avYUVFrame->linesize[1],
+                               avRGBFrame->data[0], avRGBFrame->linesize[0],
+                               outWidth, outHeight);*/
+
+            /*     libyuv::ARGBScale(avRGBFrame->data[0], avRGBFrame->linesize[0], outWidth,
+                                   outHeight, avRGBScaleFrame->data[0],
+                                   avRGBScaleFrame->linesize[0],
+                                   outWidth / 2, outHeight / 2, libyuv::kFilterNone);*/
+            /* libyuv::YUVToARGBScaleClip(avYUVFrame->data[0], avYUVFrame->linesize[0],
+                                        avYUVFrame->data[2], avYUVFrame->linesize[2],
+                                        avYUVFrame->data[1], avYUVFrame->linesize[1],
+             );*/
+            sws_scale(swsContext, (const uint8_t *const *) avYUVFrame->data, avYUVFrame->linesize,
+                      0,
                       codecpar->height,
                       avRGBFrame->data, avRGBFrame->linesize);
 
             // 获取stride
-            uint8_t *dst = (uint8_t *) windowBuffer.bits;
-            int dstStride = windowBuffer.stride * 4;
-            uint8_t *src = avRGBFrame->data[0];
-            int srcStride = avRGBFrame->linesize[0];
+            /* uint8_t *dst = (uint8_t *) windowBuffer.bits;
+             int dstStride = windowBuffer.stride * 4;
 
-            // 由于window的stride和帧的stride不同,因此需要逐行复制
-            for (int h = 0; h < codecpar->height; h++) {
-                memcpy(dst + h * dstStride, src + h * srcStride, srcStride);
-            }
+             uint8_t *src = avRGBFrame->data[0];
+             int srcStride = avRGBFrame->linesize[0];
+
+             // 由于window的stride和帧的stride不同,因此需要逐行复制
+             for (int h = 0; h < codecpar->height; h++) {
+                 memcpy(dst + h * dstStride, src + h * srcStride, srcStride);
+             }*/
 
             ANativeWindow_unlockAndPost(nativeWindow);
 
+            usleep(1000 * 16);
             //LOGE("%s", "Succeed to decode 1 frame!\n");
         }
         av_packet_unref(packet);
@@ -335,7 +283,7 @@ JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_playVideo
     sws_freeContext(swsContext);
 
     // 释放资源
-    av_frame_free(&avFrame);
+    av_frame_free(&avYUVFrame);
     av_frame_free(&avRGBFrame);
 
     avcodec_close(avCodecContext);

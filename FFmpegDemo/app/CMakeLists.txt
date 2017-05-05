@@ -58,6 +58,13 @@ set_target_properties( swscale
                      PROPERTIES IMPORTED_LOCATION
        ${CMAKE_SOURCE_DIR}/libs/${ANDROID_ABI}/libswscale-4.so )
 
+add_library( yuv
+           SHARED
+           IMPORTED )
+set_target_properties( yuv
+                     PROPERTIES IMPORTED_LOCATION
+       ${CMAKE_SOURCE_DIR}/libs/${ANDROID_ABI}/libyuv.so )
+
 #=======================================================================================
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++11")
@@ -66,4 +73,4 @@ add_library( ffmpegtest
              SHARED
              src/main/jni/FFmpegTest.cpp )
 
-target_link_libraries( ffmpegtest avcodec avdevice avfilter avformat avutil swresample swscale android ${log-lib} )
+target_link_libraries( ffmpegtest yuv avcodec avdevice avfilter avformat avutil swresample swscale android ${log-lib} )
