@@ -5,6 +5,7 @@
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
 #include "unistd.h"
+
 /* Header for class net_yxcoding_ffmpeg_FFmpegUtil */
 
 #define LOGE(...) __android_log_print( ANDROID_LOG_ERROR, "yxcoding", __VA_ARGS__ )
@@ -20,7 +21,17 @@ extern "C" {
 #include <libswscale/swscale.h>
 #include <libyuv.h>
 #include <libavutil/time.h>
+#include <libsdl/SDL.h>
+
 #endif
+
+#define EVENT_FTP_REFRESH 0x1
+#define EVENT_BREAK (EVENT_FTP_REFRESH + 1)
+
+#define MODE 1
+
+
+void decodeVide(AVFormatContext *avFormatContext, JNIEnv *env, jobject jsurface);
 
 JNIEXPORT jstring JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_ffmpegInfo
         (JNIEnv *, jclass) {
@@ -45,45 +56,40 @@ void formatTime(int64_t time) {
     LOGD("%02d:%02d:%02d\n", hours, mins, secs);
 }
 
-int ScaleYUVImgToRGB(int nSrcW, int nSrcH, uint8_t *src_data, int *linesize, int nDstW, int nDstH) {
-    int i;
-    int ret;
-    FILE *nRGB_file;
+void play(const char *filePath) {
+    LOGD("filePath = %s", filePath);
 
-    AVFrame *nDst_picture;
-    struct SwsContext *m_pSwsContext;
+    // ffmpeg 第一步初始化注册
+    av_register_all();
 
-    nDst_picture = av_frame_alloc();
-    if (!nDst_picture) {
-        printf("nDst_picture avcodec_alloc_frame failed\n");
-        exit(1);
-    }
-    if (avpicture_alloc((AVPicture *) nDst_picture, AV_PIX_FMT_RGBA, nDstW, nDstH) < 0) {
-        printf("dst_picture avpicture_alloc failed\n");
-        return -1;
-    }
-    m_pSwsContext = sws_getContext(nSrcW, nSrcH, AV_PIX_FMT_YUV420P,
-                                   nDstW, nDstH, AV_PIX_FMT_RGBA,
-                                   SWS_BICUBIC,
-                                   NULL, NULL, NULL);
+    // 获取上下文路径
+    AVFormatContext *avFormatContext = avformat_alloc_context();
 
-    if (NULL == m_pSwsContext) {
-        printf("ffmpeg get context error!\n");
-        exit(-1);
+    // 打开媒体文件
+    if (avformat_open_input(&avFormatContext, filePath, NULL, NULL) != 0) {
+        LOGE("%s", "无法打开视频文件");
+        return;
     }
 
-    ret = sws_scale(m_pSwsContext, (const uint8_t *const *) src_data, linesize, 0, nSrcH,
-                    nDst_picture->data,
-                    nDst_picture->linesize);
+    // 获取媒体流信息
+    if (avformat_find_stream_info(avFormatContext, NULL) < 0) {
+        LOGE("%s", "无法获取视频信息");
+        return;
+    }
+    //SDL_SetMainReady();
+    //------------SDL初始化--------
+    if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER)) {
+        LOGE( "Could not initialize SDL - %s\n", SDL_GetError());
+        return;
+    }
 
-    nRGB_file = fopen("..\\YUV_STREAM\\RGBFile.rgb", "ab+");
-    fwrite(nDst_picture->data[0], nDstW * nDstH * 3, 1, nRGB_file);
-    fclose(nRGB_file);
 
-    sws_freeContext(m_pSwsContext);
-    avpicture_free((AVPicture *) nDst_picture);
+    decodeVide(avFormatContext, NULL, NULL);
 
-    return 0;
+    SDL_Quit();
+    avformat_close_input(&avFormatContext);
+
+    avformat_free_context(avFormatContext);
 }
 
 JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_playVideo
@@ -109,7 +115,45 @@ JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_playVideo
         LOGE("%s", "无法获取视频信息");
         return;
     }
+    //------------SDL初始化--------
+    if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER)) {
+        LOGE( "Could not initialize SDL - %s\n", SDL_GetError());
+        return;
+    }
 
+
+    decodeVide(avFormatContext, env, jsurface);
+
+
+    avformat_close_input(&avFormatContext);
+
+    avformat_free_context(avFormatContext);
+}
+int thread_exit;
+int ftp_refresh(void *opaque) {
+    thread_exit=0;
+    while (!thread_exit) {
+        SDL_Event event;
+        event.type = EVENT_FTP_REFRESH;
+        SDL_PushEvent(&event);
+        //SDL_Delay(20);
+    }
+    thread_exit=0;
+    //Break
+    SDL_Event event;
+    event.type = EVENT_BREAK;
+    SDL_PushEvent(&event);
+
+    return 0;
+}
+
+/**
+ * 视频解码
+ * @param avFormatContext
+ * @param env
+ * @param jsurface
+ */
+void decodeVide(AVFormatContext *avFormatContext, JNIEnv *env, jobject jsurface) {
     LOGD("nb_streams = %d", avFormatContext->nb_streams);
 
     int videoIndex = -1;
@@ -134,7 +178,6 @@ JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_playVideo
         LOGE("%s", "无法找到解码器");
         return;
     }
-    //AVCodecContext *avCodecContext = avcodec_alloc_context3(avCodec);
     AVCodecContext *avCodecContext = avFormatContext->streams[videoIndex]->codec;
     // 打开解码器
     if (avcodec_open2(avCodecContext, avCodec, NULL) < 0) {
@@ -155,142 +198,234 @@ JNIEXPORT void JNICALL Java_net_yxcoding_ffmpeg_FFmpegUtil_playVideo
     LOGD("outHeight = %d", outHeight);
 
     // 获取native window
-    ANativeWindow *nativeWindow = ANativeWindow_fromSurface(env, jsurface);
-    ANativeWindow_Buffer windowBuffer;
+    //ANativeWindow *nativeWindow = ANativeWindow_fromSurface(env, jsurface);
+    //ANativeWindow_Buffer windowBuffer;
 
-    // 获得帧图片大小
-    //int acImageBufferSize = av_image_get_buffer_size(AV_PIX_FMT_RGBA, outWidth, outHeight, 1);
 
-    //LOGD("acImageBufferSize = %d", acImageBufferSize);
+    SDL_Window *screen = SDL_CreateWindow("Player",
+                                          SDL_WINDOWPOS_UNDEFINED,SDL_WINDOWPOS_UNDEFINED,
+                                          0, 0,SDL_WINDOW_RESIZABLE|SDL_WINDOW_OPENGL);
+    if(!screen) {
+        LOGE("SDL: could not set video mode - exiting\n");
+        return;
+    }
 
-    // uint8_t *buf;
-    //buf = (uint8_t *) av_malloc(acImageBufferSize);
+    //SDL_SetWindowSize(screen, codecpar->width, codecpar->height);
 
-//    if (buf == NULL) {
-//        LOGE("%s", "av malloc fail");
-//        return;
-//    }
+    int w=0;
+    int h=0;
+    SDL_GetWindowSize(screen,&w,&h);
 
+    LOGE("SDL_GetWindow w = %d, h = %d", w,h);
+#if MODE
+    Uint32 sdl_out_fmt = SDL_PIXELFORMAT_IYUV;
+#else
+    Uint32 sdl_out_fmt = SDL_PIXELFORMAT_RGBA32;
+#endif
+
+    SDL_Renderer* sdlRenderer = SDL_CreateRenderer(screen, -1, 0);
+    SDL_Texture* sdlTexture = SDL_CreateTexture(
+            sdlRenderer,
+            sdl_out_fmt,
+            SDL_TEXTUREACCESS_STREAMING,
+            outWidth,
+            outHeight);
+    SDL_Event event;
+
+    SDL_Rect rect;
+    SDL_Rect rect2;
+
+    SDL_Rect rect3;
+    SDL_Rect rect4;
 
     // 编码数据（压缩数据）
     AVPacket *packet = (AVPacket *) av_malloc(sizeof(AVPacket));    // 为一帧图像分配内存
     // 解码数据
     // Y    U V  4:1:1
     // 亮度  色度
-    AVFrame *avYUVFrame = av_frame_alloc();
-    AVFrame *avRGBFrame = av_frame_alloc();
-    AVFrame *avRGBScaleFrame = av_frame_alloc();
+    AVFrame *avFrame = av_frame_alloc();
+    AVFrame *avOutFrame = av_frame_alloc();
 
-    if (avYUVFrame == NULL || avRGBFrame == NULL) {
+    if (avFrame == NULL || avOutFrame == NULL) {
         LOGE("%s", "frame alloc fail");
         return;
     }
-    /*av_image_fill_arrays(avRGBFrame->data, avRGBFrame->linesize, buf, AV_PIX_FMT_RGBA,
-                         outWidth, outHeight, 1);*/
 
-    //avpicture_fill()
+#if MODE
+    //output frame for SDL
+    enum AVPixelFormat pixel_fmt = AV_PIX_FMT_YUV420P;
 
-    LOGE("%d", avCodecContext->pix_fmt);
+#else
+    //output RGBFrame
+    enum AVPixelFormat pixel_fmt = AV_PIX_FMT_RGBA;
+#endif
 
-    int winWidth = ANativeWindow_getWidth(nativeWindow);
-    int winHeight = ANativeWindow_getHeight(nativeWindow);
+    //size buffer
+    uint8_t *out_buffer = (uint8_t *)
+            av_malloc((size_t) av_image_get_buffer_size(pixel_fmt, codecpar->width, codecpar->height, 1));
+    av_image_fill_arrays(avOutFrame->data,avOutFrame->linesize, out_buffer,
+                         pixel_fmt,codecpar->width,codecpar->height,1);
+
+    //int winWidth = ANativeWindow_getWidth(nativeWindow);
+    //int winHeight = ANativeWindow_getHeight(nativeWindow);
 
     struct SwsContext *swsContext = sws_getContext(codecpar->width, codecpar->height,
-                                                   AV_PIX_FMT_YUV420P,
-                                                   outWidth, outHeight,
-                                                   AV_PIX_FMT_RGBA,
+                                                   avCodecContext->pix_fmt,
+                                                   codecpar->width, codecpar->height,
+                                                   pixel_fmt,
                                                    SWS_BICUBIC, NULL, NULL, NULL);
 
-    LOGE("%d", avCodecContext->pix_fmt);
+    SDL_CreateThread(ftp_refresh,NULL,NULL);
 
     AVStream *videoStream = avFormatContext->streams[videoIndex];
 
-    LOGD("winwidth = %d, winHeight = %d", ANativeWindow_getHeight(nativeWindow),
-         ANativeWindow_getWidth(nativeWindow));
+    int frame_rate=videoStream->avg_frame_rate.num/videoStream->avg_frame_rate.den;//每秒多少帧
+    LOGD("frame_rate = %d", frame_rate);
 
-    while (av_read_frame(avFormatContext, packet) >= 0) {
-        // 对视频进行解码
-        if (packet->stream_index == videoIndex) {
-            //avcodec_decode_video2();
-            int res = avcodec_send_packet(avCodecContext, packet);
-            if (res != 0) {
+    FILE *yuvFile = fopen("/sdcard/12345.yuv", "wb+");
+    for(;;) {
+        SDL_WaitEvent(&event);
+        if(EVENT_FTP_REFRESH == event.type) {
+            if(av_read_frame(avFormatContext, packet) >= 0) {
+                // 对视频进行解码
+                if (packet->stream_index == videoIndex) {
+                    //avcodec_decode_video2();
+                    int res = avcodec_send_packet(avCodecContext, packet);
+                    if (res != 0) {
+                        av_packet_unref(packet);
+                        LOGE("decode error %d %d %d %d %d", res, AVERROR(EAGAIN), AVERROR_EOF,
+                             AVERROR(EINVAL),
+                             AVERROR(ENOMEM));
+                        continue;
+                    }
+                    if (avcodec_receive_frame(avCodecContext, avFrame) != 0) {
+                        av_packet_unref(packet);
+                        LOGE("%s", "decode error2.\n");
+                        continue;
+                    }
+
+                    //double time = packet->pts * av_q2d(videoStream->time_base);
+                    //formatTime(time * AV_TIME_BASE);
+
+
+                    //ANativeWindow_setBuffersGeometry(nativeWindow, outWidth, outHeight,
+                    //WINDOW_FORMAT_RGBA_8888);
+                    // lock native window buffer
+                    //ANativeWindow_lock(nativeWindow, &windowBuffer, NULL);
+
+                    // 设置rgb_frame 的属性（像素格式，宽高）和缓冲区
+                    // rgb_frame 缓冲区与windowBuffer.bits 是同一块内存，指向surface
+                    //avpicture_fill((AVPicture *) avOutFrame, (const uint8_t *) windowBuffer.bits,
+                    //AV_PIX_FMT_RGBA, outWidth, outHeight);
+
+                    // YUV420 > RGB
+                    /*libyuv::I420ToARGB(avFrame->data[0], avFrame->linesize[0],
+                                       avFrame->data[2], avFrame->linesize[2],
+                                       avFrame->data[1], avFrame->linesize[1],
+                                       avOutFrame->data[0], avOutFrame->linesize[0],
+                                       outWidth, outHeight);*/
+
+                   sws_scale(swsContext, (const uint8_t *const *) avFrame->data, avFrame->linesize,
+                              0,
+                              codecpar->height,
+                              avOutFrame->data, avOutFrame->linesize);
+                    //------------SDL显示--------
+                    int margin = w - outWidth;
+                    ///LOGD("margin = %d", margin);
+                    rect.x = 0;
+                    rect.y = 0;
+
+                #if MODE
+                    rect.w = w;
+                    rect.h = h;
+
+                #else
+                    rect.w = outWidth;
+                    rect.h = outHeight;
+                #endif
+                    rect2.x = outWidth;
+                    rect2.y = 0;
+                    rect2.w = outWidth;
+                    rect2.h = outHeight;
+
+                    rect3.x = 0;
+                    rect3.y = outHeight;
+                    rect3.w = outWidth;
+                    rect3.h = outHeight;
+
+                    rect4.x = outWidth;
+                    rect4.y = outHeight;
+                    rect4.w = outWidth;
+                    rect4.h = outHeight;
+
+                    //LOGD("rect.w = %d, rect.h = %d", rect.w,rect.h);
+                #if MODE
+                    SDL_UpdateYUVTexture(sdlTexture, NULL, avOutFrame->data[0], avOutFrame->linesize[0],
+                                         avOutFrame->data[1], avOutFrame->linesize[1],
+                                         avOutFrame->data[2],avOutFrame->linesize[2]);
+
+                    int y_size=codecpar->width*codecpar->height;
+                    fwrite(avOutFrame->data[0],1,y_size,yuvFile);    //Y
+                    fwrite(avOutFrame->data[1],1,y_size/4,yuvFile);  //U
+                    fwrite(avOutFrame->data[2],1,y_size/4,yuvFile);  //V
+                #else
+                    SDL_UpdateTexture( sdlTexture, &rect, avOutFrame->data[0], avOutFrame->linesize[0]);
+                #endif
+
+
+//            SDL_UpdateTexture( sdlTexture, &rect2, avOutFrame->data[0], avOutFrame->linesize[0]);
+//            SDL_UpdateTexture( sdlTexture, &rect3, avOutFrame->data[0], avOutFrame->linesize[0]);
+//            SDL_UpdateTexture( sdlTexture, &rect4, avOutFrame->data[0], avOutFrame->linesize[0]);
+
+                    SDL_RenderClear( sdlRenderer );
+
+                    SDL_RenderCopy( sdlRenderer, sdlTexture, &rect, &rect );
+//            SDL_RenderCopy( sdlRenderer, sdlTexture, NULL, &rect2 );
+//            SDL_RenderCopy( sdlRenderer, sdlTexture, NULL, &rect3 );
+//            SDL_RenderCopy( sdlRenderer, sdlTexture, NULL, &rect4 );
+
+                    SDL_RenderPresent( sdlRenderer );
+                    //延时20ms
+                    //------------SDL-----------
+SDL_Delay(40);
+                    // ANativeWindow_unlockAndPost(nativeWindow);
+                }
                 av_packet_unref(packet);
-                LOGE("decode error %d %d %d %d %d", res, AVERROR(EAGAIN), AVERROR_EOF,
-                     AVERROR(EINVAL),
-                     AVERROR(ENOMEM));
-                return;
             }
-            if (avcodec_receive_frame(avCodecContext, avYUVFrame) != 0) {
-                av_packet_unref(packet);
-                LOGE("%s", "decode error2.\n");
-                return;
+            else{
+                thread_exit = 1;
+                break;
             }
-
-            double time = packet->pts * av_q2d(videoStream->time_base);
-            formatTime(time * AV_TIME_BASE);
-
-
-            ANativeWindow_setBuffersGeometry(nativeWindow, outWidth, outHeight,
-                                             WINDOW_FORMAT_RGBA_8888);
-            // lock native window buffer
-            ANativeWindow_lock(nativeWindow, &windowBuffer, NULL);
-
-            // 设置rgb_frame 的属性（像素格式，宽高）和缓冲区
-            // rgb_frame 缓冲区与windowBuffer.bits 是同一块内存，指向surface
-            avpicture_fill((AVPicture *) avRGBFrame, (const uint8_t *) windowBuffer.bits,
-                           AV_PIX_FMT_RGBA, outWidth, outHeight);
-
-            // YUV420 > RGB
-            /*libyuv::I420ToARGB(avYUVFrame->data[0], avYUVFrame->linesize[0],
-                               avYUVFrame->data[2], avYUVFrame->linesize[2],
-                               avYUVFrame->data[1], avYUVFrame->linesize[1],
-                               avRGBFrame->data[0], avRGBFrame->linesize[0],
-                               outWidth, outHeight);*/
-
-            /*     libyuv::ARGBScale(avRGBFrame->data[0], avRGBFrame->linesize[0], outWidth,
-                                   outHeight, avRGBScaleFrame->data[0],
-                                   avRGBScaleFrame->linesize[0],
-                                   outWidth / 2, outHeight / 2, libyuv::kFilterNone);*/
-            /* libyuv::YUVToARGBScaleClip(avYUVFrame->data[0], avYUVFrame->linesize[0],
-                                        avYUVFrame->data[2], avYUVFrame->linesize[2],
-                                        avYUVFrame->data[1], avYUVFrame->linesize[1],
-             );*/
-            sws_scale(swsContext, (const uint8_t *const *) avYUVFrame->data, avYUVFrame->linesize,
-                      0,
-                      codecpar->height,
-                      avRGBFrame->data, avRGBFrame->linesize);
-
-            // 获取stride
-            /* uint8_t *dst = (uint8_t *) windowBuffer.bits;
-             int dstStride = windowBuffer.stride * 4;
-
-             uint8_t *src = avRGBFrame->data[0];
-             int srcStride = avRGBFrame->linesize[0];
-
-             // 由于window的stride和帧的stride不同,因此需要逐行复制
-             for (int h = 0; h < codecpar->height; h++) {
-                 memcpy(dst + h * dstStride, src + h * srcStride, srcStride);
-             }*/
-
-            ANativeWindow_unlockAndPost(nativeWindow);
-
-            usleep(1000 * 16);
-            //LOGE("%s", "Succeed to decode 1 frame!\n");
         }
-        av_packet_unref(packet);
+        else if(SDL_QUIT == event.type) {
+            thread_exit = 1;
+        }
+        else if(EVENT_BREAK == event.type) {
+            break;
+        }
     }
+
+  /*  while (av_read_frame(avFormatContext, packet) >= 0) {
+
+    }*/
+
+    fclose(yuvFile);
+    SDL_DestroyTexture(sdlTexture);
 
     sws_freeContext(swsContext);
 
     // 释放资源
-    av_frame_free(&avYUVFrame);
-    av_frame_free(&avRGBFrame);
+    av_frame_free(&avFrame);
+    av_frame_free(&avOutFrame);
 
     avcodec_close(avCodecContext);
+}
 
-    avformat_close_input(&avFormatContext);
-
-    avformat_free_context(avFormatContext);
+int main(int argc, char *argv[]) {
+    char* filePath = argv[1];
+    play(filePath);
+    LOGE("%s", "in to main");
+    return 0;
 }
 
 #ifdef __cplusplus

@@ -65,12 +65,20 @@ set_target_properties( yuv
                      PROPERTIES IMPORTED_LOCATION
        ${CMAKE_SOURCE_DIR}/libs/${ANDROID_ABI}/libyuv.so )
 
+add_library( sdl
+           SHARED
+           IMPORTED )
+set_target_properties( sdl
+                     PROPERTIES IMPORTED_LOCATION
+       ${CMAKE_SOURCE_DIR}/libs/${ANDROID_ABI}/libSDL2.so )
+
+
 #=======================================================================================
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++11")
 
 add_library( ffmpegtest
              SHARED
-             src/main/jni/FFmpegTest.cpp )
+             src/main/jni/FFmpegTest.cpp src/main/jni/SDL_android_main.c )
 
-target_link_libraries( ffmpegtest yuv avcodec avdevice avfilter avformat avutil swresample swscale android ${log-lib} )
+target_link_libraries( ffmpegtest yuv sdl avcodec avdevice avfilter avformat avutil swresample swscale android ${log-lib} )
